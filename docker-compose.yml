@@ -1,0 +1,129 @@
+# =============================================================================
+# Docker Compose Configuration File
+# Maintainer: Nahuel Navales
+# =============================================================================
+
+x-spark-common: &spark-common
+  build:
+    context: .
+    dockerfile: Dockerfiles/spark.Dockerfile
+  volumes:
+    - ./spark-jobs:/opt/spark/jobs
+  networks:
+    - admin
+
+services:
+  spark-master:
+    <<: *spark-common
+    command: bin/spark-class org.apache.spark.deploy.master.Master
+    ports:
+      - "9090:8080"
+      - "7077:7077"
+    container_name: sparkmaster
+    restart: always
+
+  spark-worker-1:
+    <<: *spark-common
+    command: bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    depends_on:
+      - spark-master
+    env_file:
+      - Dockerfiles/conf/conf-spark/.env
+    container_name: sparkworker
+    restart: always
+
+  mysql:
+    container_name: mysql-metastore
+    image: mysql:8.0
+    env_file:
+      - Dockerfiles/conf/conf-mysql/.env
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - admin
+    restart: always
+
+  minio:
+    container_name: minio
+    image: "minio/minio:latest"
+    volumes:
+      - minio_data:/data
+    ports:
+      - 9000:9000
+      - 9001:9001
+    env_file:
+      - Dockerfiles/conf/conf-minio/.env
+    command: server /data --console-address ":9001"
+    networks:
+      - admin
+    restart: always
+
+  createbuckets:
+    container_name: minio-createbucket
+    image: minio/mc
+    depends_on:
+      - minio
+    volumes:
+      - ./Dockerfiles/conf/conf-minio/mc-setup.sh:/usr/bin/mc-setup.sh:ro
+    entrypoint: /usr/bin/mc-setup.sh 
+    networks:
+      - admin
+
+  jupyter:
+    container_name: jupyter
+    build:
+      context: .
+      dockerfile: Dockerfiles/jupyter.Dockerfile
+    ports:
+      - "8888:8888"
+    volumes:
+      - jupyter_notebooks:/home/jovyan/work
+      - ./notebooks:/home/jovyan/work/notebooks
+    networks:
+      - admin
+    restart: always
+
+  hive-metastore:
+    container_name: hive-metastore
+    build:
+      context: .
+      dockerfile: Dockerfiles/hive.Dockerfile
+    env_file:
+      - Dockerfiles/conf/conf-hive/.env
+    ports:
+      - "9083:9083"
+    depends_on:
+      - mysql
+    networks:
+      - admin
+    restart: always
+
+  spark-thrift-server:
+    container_name: spark-thrift-server
+    build:
+      context: .
+      dockerfile: Dockerfiles/spark.Dockerfile
+    ports:
+      - "12000:12000"
+    environment:
+      - SPARK_CONF_DIR=/opt/bitnami/spark/conf
+    command: /opt/bitnami/spark/sbin/start-thriftserver.sh \
+      --master spark://spark-master:7077 \
+      --conf spark.sql.catalogImplementation=hive \
+      --conf spark.hadoop.hive.metastore.uris=thrift://hive-metastore:9083 \
+      --executor-cores 2 \
+      --executor-memory 2G
+    networks:
+      - admin
+    restart: always
+
+volumes:
+  minio_data:
+  jupyter_notebooks:
+  mysql_data:
+
+networks:
+  admin:
+    driver: bridge
